@@ -1,17 +1,18 @@
-name: Sync to Xposed Modules Repo
+name: Build and Release
 
-# 每次 push 到 main（或手动触发）时：
-# 1. sync    → 把完整源码同步到 Xposed-Modules-Repo/dev.operit.fanqiehook
-# 2. release → 在 CI 上构建 release APK（KEYSTORE_BASE64 固定签名），
-#              发布到模块仓库 Release（tag: [versionCode]-[versionName]，已存在则覆盖更新）。
-# 官方构建系统会监听模块仓库的 push 与 Release，自动更新 modules.lsposed.org 页面。
+# push 到 main（或手动触发）时：
+#   1. check   → 判断 app 代码自上次发布以来是否有变更
+#   2. release → 用 KEYSTORE_BASE64 固定签名构建 APK，发布到本仓库 Release
+#
+# update.json 指向本仓库 Release 资产，LSPosed 通过它检查更新。
+# 注意：本 fork 不向 Xposed-Modules-Repo 推送（无写入权限），官方模块索引需要单独申请。
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
     inputs:
       publish_release:
-        description: '构建 APK 并发布 Release 到模块仓库（代码未变更时手动补发）'
+        description: '构建 APK 并发布 Release（代码未变更时手动补发）'
         required: false
         default: false
         type: boolean
@@ -20,56 +21,12 @@ permissions:
   contents: write
 
 jobs:
-  sync:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout source repo
-        uses: actions/checkout@v5
-        with:
-          path: source
-
-      - name: Checkout Xposed modules repo
-        uses: actions/checkout@v5
-        with:
-          repository: Xposed-Modules-Repo/dev.operit.fanqiehook
-          token: ${{ secrets.XPOSED_REPO_TOKEN }}
-          path: xposed-repo
-
-      - name: Sync source files into modules repo
-        run: |
-          rsync -a --delete \
-            --exclude='.git/' \
-            --exclude='.github/' \
-            --exclude='.gradle/' \
-            --exclude='.idea/' \
-            --exclude='.kotlin/' \
-            --exclude='local.properties' \
-            --exclude='*.log' \
-            --exclude='release/' \
-            --exclude='**/build/' \
-            source/ xposed-repo/
-
-      - name: Commit and push
-        run: |
-          cd xposed-repo
-          git config user.name "afwfv"
-          git config user.email "afwfv@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No changes to sync"
-          else
-            git commit -m "chore: sync from afwfv/FanqieHook @ ${GITHUB_SHA::7}"
-            git push origin main
-          fi
-
-  # 检查自上次构建以来是否有 app 本身（源码/资源/构建配置）变更。
-  # 只有涉及 app 的变更才重新构建发布；纯 CI / 文档改动跳过构建。
   check:
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.app-changed.outputs.changed }}
     steps:
-      - name: Checkout source repo
+      - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -77,17 +34,16 @@ jobs:
       - name: Detect app code changes
         id: app-changed
         env:
-          GH_TOKEN: ${{ secrets.XPOSED_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          repo=Xposed-Modules-Repo/dev.operit.fanqiehook
-          # 从模块仓库最新 release notes 解析上次构建的 commit
+          repo="${{ github.repository }}"
+          # 从本仓库最新 release notes 解析上次构建的 commit
           last_sha=$(gh release view --repo "$repo" --json body -q '.body' 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1 || true)
           if [ -z "$last_sha" ]; then
             echo "No previous release, will build."
             echo "changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # app 相关文件在此区间是否有变化
           changed_files=$(git diff --name-only "$last_sha"..HEAD -- app build.gradle.kts settings.gradle.kts gradle.properties gradle gradlew gradlew.bat)
           if [ -n "$changed_files" ]; then
             echo "App code changed:"
@@ -98,16 +54,14 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # 每次 push 到 main 且 app 代码有变更时自动构建并发布；手动触发勾选 publish_release 可强制发布。
   release:
     needs: check
     if: needs.check.outputs.changed == 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout source repo
+      - name: Checkout
         uses: actions/checkout@v5
         with:
-          # 需要完整历史以生成 release notes（git log 上次commit..HEAD）
           fetch-depth: 0
 
       - name: Set up JDK 17
@@ -154,24 +108,20 @@ jobs:
         run: |
           versionCode=$(grep '^versionCode=' app/src/main/resources/META-INF/xposed/module.prop | cut -d= -f2 | tr -d '\r')
           versionName=$(grep '^version=' app/src/main/resources/META-INF/xposed/module.prop | cut -d= -f2 | tr -d '\r' | sed 's/^v//')
-          echo "tag=${versionCode}-${versionName}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${versionName}" >> "$GITHUB_OUTPUT"
           echo "versionName=${versionName}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare release notes
         env:
-          GH_TOKEN: ${{ secrets.XPOSED_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 模块仓库与自家仓库共用同一份更新说明
-          tag="${{ steps.version.outputs.tag }}"
+          repo="${{ github.repository }}"
+          last_sha=$(gh release view --repo "$repo" --json body -q '.body' 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1 || true)
 
-          # 从旧 release notes 解析上次发布的 commit，用于回退生成本次变更日志
-          last_sha=$(gh release view "$tag" --repo Xposed-Modules-Repo/dev.operit.fanqiehook --json body -q '.body' 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1 || true)
-
-          # 从 CHANGELOG.md 读取更新说明：优先按当前版本号匹配「## x.x.x」段，其次「未发布」段
           changelog_section=""
           if [ -f CHANGELOG.md ]; then
             ver="${{ steps.version.outputs.versionName }}"
-            # 1) 按版本号段读取（支持 ## 0.3.0、## v0.3.0、## 0.3.0 - 日期 等标题）
+            # 1) 按版本号段读取（支持 ## 0.3.0、## v0.3.0）
             changelog_section=$(awk -v v="$ver" '
               /^## / {
                 t = $2; sub(/^v/, "", t);
@@ -188,18 +138,12 @@ jobs:
           if [ -n "$changelog_section" ]; then
             { echo "更新内容:"; echo "$changelog_section"; } > RELEASE_NOTES.md
           else
-            # 回退：上次发布以来的全部提交（排除 merge）；无记录则取最近 15 条
             if [ -n "$last_sha" ] && [ "$last_sha" != "$GITHUB_SHA" ]; then
               log=$(git log --no-merges --oneline "$last_sha"..HEAD)
             else
               log=$(git log --no-merges --oneline -15 HEAD)
             fi
-
-            # 过滤 CI/构建等内部提交（消息以 ci/chore/build/test 开头，或带 (ci) 作用域），保留面向用户的变更
-            # 注意 git log --oneline 输出为 "hash 提交信息"，需跳过行首 hash 再匹配
             user_changes=$(echo "$log" | grep -viE '^[0-9a-f]+\s+(ci|chore|build|test)(\([^)]*\))?:|^[0-9a-f]+\s+[a-z]+\(ci\):' || true)
-
-            # 无用户可见变更时给出提示
             if [ -z "$user_changes" ]; then
               echo "本次更新无面向用户的变更（仅内部维护更新）。" > RELEASE_NOTES.md
             else
@@ -209,47 +153,19 @@ jobs:
           echo "" >> RELEASE_NOTES.md
           echo "Built from \`$GITHUB_SHA\`" >> RELEASE_NOTES.md
 
-      # 先发布自家仓库（用 GITHUB_TOKEN，永远可用），再发布模块仓库。
-      # 顺序很重要：模块仓库那步依赖 XPOSED_REPO_TOKEN，一旦该 secret 失效/过期，
-      # 它后面的步骤会被整体 skip。曾经因此出现「构建成功 + 两处 Release 都没发出」，
-      # 而 update.json 指向的正是自家仓库，导致模块中心更新链路一起挂掉。
-      # 现在即便 token 失效，自家仓库的 Release（含 CI 固定签名 APK）仍会正常发布，
-      # 模块仓库那步照旧失败并把 CI 标红，问题依旧可见。
-      - name: Publish release on own repo (upsert)
+      - name: Publish release (upsert)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v${{ steps.version.outputs.versionName }}"
-          repo=${{ github.repository }}
-
-          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-            echo "Tag $tag already exists, deleting and recreating..."
-            gh release delete "$tag" --repo "$repo" --yes
-          fi
-
-          gh release create "$tag" \
-            app/build/outputs/apk/release/app-release.apk \
-            --repo "$repo" \
-            --title "FanqieHook v${{ steps.version.outputs.versionName }}" \
-            --notes-file RELEASE_NOTES.md \
-            --latest
-
-      - name: Publish release on Xposed modules repo (upsert)
-        env:
-          GH_TOKEN: ${{ secrets.XPOSED_REPO_TOKEN }}
-        run: |
           tag="${{ steps.version.outputs.tag }}"
-          repo=Xposed-Modules-Repo/dev.operit.fanqiehook
-
-          # 同名 tag 已存在则先删除再重建（保证模块中心始终指向最新构建）
+          repo="${{ github.repository }}"
           if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
             echo "Tag $tag already exists, deleting and recreating..."
             gh release delete "$tag" --repo "$repo" --yes
           fi
-
           gh release create "$tag" \
             app/build/outputs/apk/release/app-release.apk \
             --repo "$repo" \
-            --title "FanqieHook v${{ steps.version.outputs.versionName }}" \
+            --title "FanqieHook Koma ${{ steps.version.outputs.versionName }}" \
             --notes-file RELEASE_NOTES.md \
             --latest
