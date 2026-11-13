@@ -10,6 +10,7 @@ import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import dev.operit.fanqiehook.hooks.AdHooks
+import dev.operit.fanqiehook.hooks.SpeedGestureHooks
 import dev.operit.fanqiehook.hooks.VipHooks
 
 /**
@@ -164,6 +165,9 @@ class FanqieModule : XposedModule() {
 
         // 会员判定放行（客户端侧；正文仍由服务端按账号下发，见 VipHooks 注释）。
         VipHooks(manager, resolver).installAll()
+
+        // 长按倍速滑动调档（仅对带 shortvideo 播放器的宿主生效，离线降级见类注释）。
+        SpeedGestureHooks(manager, resolver).installAll()
 
         // The one line that answers "did this host version break anything?".
         // INFO when nothing that this host is expected to have went missing, WARN (naming the

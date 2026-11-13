@@ -10,11 +10,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.operit.fanqiehook"
+        applicationId = "dev.operit.fanqiehook.koma"
         minSdk = 26
         targetSdk = 35
-        versionCode = 35
-        versionName = "0.9.2"
+        versionCode = 100
+        versionName = "0.10.0-koma"
 
         // DexKit 的 libdexkit.so 必须在宿主进程内加载，因此只需要宿主实际使用的 ABI。
         // 已核验：番茄小说 73532 与 73732 的 APK 都只打包 arm64-v8a（117 / 116 个 .so 全在
