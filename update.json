@@ -1,6 +1,6 @@
 {
-  "version": "v0.10.0-koma",
-  "versionCode": 100,
-  "zipUrl": "https://github.com/Koma-Chen/FanqieHook/releases/download/v0.10.0-koma/app-release.apk",
+  "version": "v0.10.1-koma",
+  "versionCode": 101,
+  "zipUrl": "https://github.com/Koma-Chen/FanqieHook/releases/download/v0.10.1-koma/app-release.apk",
   "changelog": "https://github.com/Koma-Chen/FanqieHook/blob/main/CHANGELOG.md"
 }

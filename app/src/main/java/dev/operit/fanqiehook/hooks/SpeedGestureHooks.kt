@@ -330,20 +330,29 @@ class SpeedGestureHooks(
     /**
      * 把左下角那行提示改成当前档位。
      *
-     * 宿主在长按时把文案写成固定字符串 `"2倍速 快进中"`，之后无论怎么改倍速都不会再动它，
-     * 所以滑动调档后界面会停在「2倍速」。
+     * 宿主在长按时把文案写成固定字符串（如「2倍速 快进中」），之后无论怎么改倍速都不会
+     * 再动它。这里只替掉开头的倍速数字，保留宿主自己的后半句——不同版本文案模板不一样。
      */
     private fun updateSpeedHint(percent: Int) {
         val cached = hintView?.takeIf { it.isAttachedToWindow }
         val tv = cached ?: findHintView()?.also { hintView = it } ?: return
-        runCatching { tv.text = "${formatPercent(percent)}倍速 快进中" }
+        val label = formatPercent(percent)
+        val current = tv.text?.toString().orEmpty()
+        val updated = if (current.contains("倍速")) {
+            current.replace(Regex("""\d+(?:\.\d+)?\s*倍速"""), "${label}倍速")
+        } else {
+            "${label}倍速 快进中"
+        }
+        runCatching { tv.text = updated }
     }
 
     /**
-     * 向下搜两层找那段文字。
+     * 找左下角那行提示的 TextView。
      *
-     * 宿主那个倍速浮层不是一个 View，而是普通对象：同时持有 ViewGroup 容器和 TextView 字段，
-     * 所以只查 adapter 一层找不到。
+     * 两层策略：
+     *  1. 先按 id 找——快，但 id 是版本相关的（[SPEED_HINT_ID] 只在 7.4.5.32 核验过）；
+     *  2. id 找不到就按**文本特征**在视图树里搜（文本含「倍速」且短），不依赖任何 id/类名。
+     *     宿主每个版本都会重排资源 id，实测 7.4.3.32 上按 id 完全找不到。
      */
     private fun findHintView(): android.widget.TextView? {
         val adapter = lastAdapter ?: return null
@@ -356,16 +365,34 @@ class SpeedGestureHooks(
         for (f in fields) {
             runCatching { f.isAccessible = true }
             val value = runCatching { f.get(root) }.getOrNull() ?: continue
-            if (value is android.widget.TextView) return value
+            if (value is android.widget.TextView && looksLikeSpeedHint(value)) return value
             if (value is android.view.View) {
-                val tv = runCatching {
+                runCatching {
                     value.rootView.findViewById<android.widget.TextView>(SPEED_HINT_ID)
-                }.getOrNull()
-                if (tv != null) return tv
+                }.getOrNull()?.takeIf { looksLikeSpeedHint(it) }?.let { return it }
+                searchViewTree(value)?.let { return it }
             }
             searchHintView(value, depth + 1)?.let { return it }
         }
         return null
+    }
+
+    /** 在给定 View 子树里按文本特征找那行提示。限制深度，避免在播放器根布局里做全量扫描。 */
+    private fun searchViewTree(root: android.view.View, depth: Int = 0): android.widget.TextView? {
+        if (depth > 8) return null
+        if (root is android.widget.TextView && looksLikeSpeedHint(root)) return root
+        if (root is android.view.ViewGroup) {
+            for (i in 0 until root.childCount) {
+                searchViewTree(root.getChildAt(i), depth + 1)?.let { return it }
+            }
+        }
+        return null
+    }
+
+    /** 「2倍速 快进中」这类短文本：长度短且含「倍速」，避免误中正文或弹幕。 */
+    private fun looksLikeSpeedHint(tv: android.widget.TextView): Boolean {
+        val text = tv.text?.toString().orEmpty()
+        return text.length in 2..24 && text.contains("倍速")
     }
 
     /** 300 -> "3"，150 -> "1.5"，125 -> "1.25"，75 -> "0.75" */
