@@ -10,6 +10,7 @@ import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import dev.operit.fanqiehook.hooks.AdHooks
+import dev.operit.fanqiehook.hooks.PortraitSpeedGestureHooks
 import dev.operit.fanqiehook.hooks.SpeedGestureHooks
 import dev.operit.fanqiehook.hooks.VipHooks
 
@@ -168,6 +169,9 @@ class FanqieModule : XposedModule() {
 
         // 长按倍速滑动调档（仅对带 shortvideo 播放器的宿主生效，离线降级见类注释）。
         SpeedGestureHooks(manager, resolver, log).installAll()
+
+        // 竖屏首页推荐流。独立一类，不改动上面横屏的任何逻辑。
+        PortraitSpeedGestureHooks(manager, resolver, log).installAll()
 
         // The one line that answers "did this host version break anything?".
         // INFO when nothing that this host is expected to have went missing, WARN (naming the
