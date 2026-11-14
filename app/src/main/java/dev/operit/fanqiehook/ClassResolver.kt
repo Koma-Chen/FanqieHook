@@ -4,6 +4,7 @@ import android.os.Build
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.UsingType
 import org.luckypray.dexkit.query.matchers.FieldMatcher
+import org.luckypray.dexkit.query.matchers.MethodMatcher
 import java.io.File
 import java.lang.reflect.Method
 import java.util.zip.ZipFile
@@ -430,6 +431,74 @@ class ClassResolver(
      * Optional [methodName] further restricts results to classes declaring a method with that
      * name (no signature filtering — useful when parameter types are obfuscated).
      */
+    /**
+     * 找出拥有指定方法名（签名不限）的所有类。
+     *
+     * 用途：少数目标**类名和方法名同时被混淆**（例如短剧播放器的手势回调 `vb5.o0`），但它
+     * 重写的是 Android 框架回调（`onLongPress` / `onDoubleTap`）。混淆器必须保留这些方法名，
+     * 否则多态分派会失效，所以按方法名就能反查到类。调用方再按字段类型、方法签名收窄到唯一
+     * 候选——收窄用的都是**稳定事实**（adapter 类名未混淆、签名由框架类型构成），不依赖字母。
+     *
+     * 返回空列表等价于硬 miss；调用方按 [HookManager] 的既有契约记一条 skipped。
+     */
+    fun findClassesHavingMethod(methodName: String): List<Class<*>> {
+        val b = bridge() ?: return emptyList()
+        return try {
+            val hits = b.findClass {
+                matcher {
+                    methods {
+                        add(MethodMatcher().apply { name(methodName) })
+                    }
+                }
+            }
+            hits.mapNotNull { runCatching { it.getInstance(classLoader) }.getOrNull() }
+                .also { log.info("DexKit classes having $methodName: ${it.size}") }
+        } catch (t: Throwable) {
+            log.warn(
+                "DexKit findClass by method $methodName failed " +
+                    "(${t.javaClass.simpleName}: ${t.message})"
+            )
+            emptyList()
+        }
+    }
+
+    /**
+     * 在指定类上按**参数类型**（+ 可选返回类型）找唯一方法。
+     *
+     * 用途：方法名被混淆但签名有辨识度时（例如短剧播放器 `X2(int, PlaybackSpeedChangeSource)`
+     * —— 该类上只有这一个方法接受「百分比 + 倍速来源」）。把混淆名从代码里彻底去掉，宿主改字母
+     * 也不影响。候选多于一个时**拒绝猜测**：宁可 skip 一条，也不要把倍速写到别的方法上。
+     */
+    fun findUniqueMethodByParams(
+        owner: Class<*>,
+        paramTypes: Array<Class<*>>,
+        returnType: Class<*>? = null
+    ): Method? {
+        val candidates = owner.declaredMethods.filter { m ->
+            !m.isSynthetic &&
+                m.parameterCount == paramTypes.size &&
+                m.parameterTypes.contentEquals(paramTypes) &&
+                (returnType == null || m.returnType == returnType)
+        }
+        val shape = paramTypes.joinToString(", ") { it.simpleName }
+        return when (candidates.size) {
+            1 -> candidates.first().apply { isAccessible = true }.also {
+                log.info("signature lookup: ${owner.name}($shape) -> ${it.name}")
+            }
+            0 -> {
+                log.warn("no method on ${owner.name} with params ($shape)")
+                null
+            }
+            else -> {
+                log.warn(
+                    "ambiguous: ${candidates.size} methods on ${owner.name} with params ($shape): " +
+                        "${candidates.map { it.name }.sorted()} — refusing to guess"
+                )
+                null
+            }
+        }
+    }
+
     fun findClassImplementingInterface(
         interfaceName: String,
         methodName: String? = null

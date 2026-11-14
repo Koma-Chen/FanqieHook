@@ -53,3 +53,9 @@ scopes*.txt
 # Frida verification scripts (internal, not published)
 frida_verify.js
 frida_min.js
+
+# signing material (never commit)
+*.jks
+*.keystore
+keystore.properties
+.koma-signing.txt
